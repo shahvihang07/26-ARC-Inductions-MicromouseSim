@@ -48,33 +48,24 @@ class StudentSolver(Node):
         d_left = msg.ranges[0]
         d_front = msg.ranges[1]
         d_right = msg.ranges[2]
-        
+
         cmd = Twist()
-        
-        #-------- DEMO LOGIC, REMOVE THIS AND WRITE YOUR OWN ---------
-        # 1. Front is blocked -> Pivot strictly in place (do not move forward!)
-        # Increased threshold to 0.65 so it has room to spin without its 0.15 radius clipping the front wall
-        if d_front < 0.65:
-            cmd.linear.x = 0.0
-            cmd.angular.z = -1.5  # Spin clockwise (right)
-            
-        # 2. Left side is open -> Curve around the corner
-        elif d_left > 0.8:
-            cmd.linear.x = 0.3
-            cmd.angular.z = 1.2   # Turn left
-            
-        # 3. Wall hugging -> P-Controller
-        else:
+
+        if d_right > 0.8:
+            # Right side is open → turn right
+            cmd.linear.x = 0.2  
+            cmd.angular.z = -1.2
+
+        elif d_front > 0.65:
+            # Front is open → move forward
             cmd.linear.x = 0.5
-            
-            # The cell is 1.0 units wide. Perfect center is 0.5.
-            target_distance = 0.5 
-            error = d_left - target_distance
-            
-            # Multiply error by a gain to steer back to the center
-            cmd.angular.z = error * 3.0
-        #-----------------------------------------------------------------
-            
+            cmd.angular.z = 0.0
+
+        else:
+            # Front and right are blocked → turn left
+            cmd.linear.x = 0.0
+            cmd.angular.z = 1.5
+
         self.cmd_pub.publish(cmd)
 
 def main(args=None):
