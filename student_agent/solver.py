@@ -1,7 +1,7 @@
 """
 Write your own solver in the scan_callback function
 """
-
+import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
@@ -33,6 +33,9 @@ class StudentSolver(Node):
             '/mouse/cmd_vel',
             10
         )
+
+        self.turning = False
+        self.turn_end_time = 0.0
         
         self.get_logger().info("Student Solver Node initialized successfully.")
         self.get_logger().info(f"Stats -> Speed: {TOP_SPEED}, Accel: {ACCELARATION}, Turn: {TURN_SPEED}, Range: {SENSOR_RANGE}")
@@ -50,21 +53,40 @@ class StudentSolver(Node):
         d_right = msg.ranges[2]
 
         cmd = Twist()
+        if self.turning:
 
-        if d_right > 0.8:
-            # Right side is open → turn right
-            cmd.linear.x = 0.2  
-            cmd.angular.z = -1.2
+            cmd.linear.x = 0.0
+            cmd.angular.z = -1.5
 
-        elif d_front > 0.65:
-            # Front is open → move forward
-            cmd.linear.x = 0.5
-            cmd.angular.z = 0.0
+            if time.time() >= self.turn_end_time:
+                self.turning = False
 
         else:
-            # Front and right are blocked → turn left
-            cmd.linear.x = 0.0
-            cmd.angular.z = 1.5
+
+            # Front is blocked -> turn right
+            if d_front < 0.65:
+
+                self.turning = True
+                self.turn_end_time = time.time() + 2.0
+
+                cmd.linear.x = 0.0
+                cmd.angular.z = -1.5
+
+            # Left side is open -> turn left
+            elif d_left > 0.85:
+
+                self.turning = True
+                self.turn_end_time = time.time() + 2.0
+
+                cmd.linear.x = 0.0
+                cmd.angular.z = 1.5
+
+            # Otherwise move forward
+            else:
+
+                cmd.linear.x = 0.5
+                cmd.angular.z = 0.0
+        
 
         self.cmd_pub.publish(cmd)
 
