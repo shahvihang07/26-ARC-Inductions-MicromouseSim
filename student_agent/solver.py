@@ -1,50 +1,62 @@
 """
 Micromouse Solver
-
-Right-hand wall-following maze solver.
+Right-wall-hugging maze solver.
 
 Priority:
-    RIGHT TURN > FORWARD > LEFT TURN > U-TURN
+    1. If front is blocked -> turn left
+    2. If right side is open -> turn right
+    3. Otherwise -> follow the right wall
 """
 
 import time
 
 import rclpy
 from rclpy.node import Node
+
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
 
 
-# ==========================================
-# These four parameters MUST add up to exactly 30!
-# ==========================================
+# ============================================================
+# THESE FOUR PARAMETERS MUST ADD UP TO EXACTLY 30
+# ============================================================
 
-TOP_SPEED = 6
-ACCELARATION = 8
-TURN_SPEED = 6
-SENSOR_RANGE = 10
+TOP_SPEED = 7
+ACCELARATION = 7
+TURN_SPEED = 7
+SENSOR_RANGE = 9
+
+# 7 + 7 + 7 + 9 = 30
 
 
-# ==========================================
-# Solver settings
-# ==========================================
+# ============================================================
+# WALL FOLLOWING SETTINGS
+# ============================================================
 
-WALL_THRESHOLD = 0.80
+# Desired distance from the right wall
+RIGHT_WALL_DISTANCE = 0.55
+
+# If front distance is below this -> front is blocked
 FRONT_BLOCKED = 0.65
 
-FORWARD_SPEED = 0.5
+# If right distance is above this -> there is a right opening
+RIGHT_OPEN = 0.90
 
-# Angular velocity
+# Forward speed
+FORWARD_SPEED = 0.45
+
+# Turning speed
 TURN_SPEED_CMD = 1.5
 
-# At 1.5 rad/s:
-# 1 second ≈ 86 degrees
-RIGHT_TURN_TIME = 1.05
-LEFT_TURN_TIME = 1.05
-U_TURN_TIME = 2.10
+# How long to turn at a corner
+LEFT_TURN_TIME = 0.85
+RIGHT_TURN_TIME = 0.85
 
-# Small straight movement after turning
-FORCED_FORWARD_TIME = 0.30
+# U-turn time
+U_TURN_TIME = 1.7
+
+# Small forward movement after completing a turn
+FORWARD_AFTER_TURN = 0.35
 
 
 class StudentSolver(Node):
@@ -53,9 +65,9 @@ class StudentSolver(Node):
 
         super().__init__('student_solver')
 
-        # ==========================================
-        # Subscriber
-        # ==========================================
+        # ====================================================
+        # SUBSCRIBER
+        # ====================================================
 
         self.scan_sub = self.create_subscription(
             LaserScan,
@@ -64,9 +76,9 @@ class StudentSolver(Node):
             10
         )
 
-        # ==========================================
-        # Publisher
-        # ==========================================
+        # ====================================================
+        # PUBLISHER
+        # ====================================================
 
         self.cmd_pub = self.create_publisher(
             Twist,
@@ -74,35 +86,70 @@ class StudentSolver(Node):
             10
         )
 
-        # ==========================================
-        # Turn state
-        # ==========================================
+        # ====================================================
+        # TURN STATE
+        # ====================================================
 
         self.turning = False
+
         self.turn_direction = 0.0
+
         self.turn_end_time = 0.0
 
-        # ==========================================
-        # Forward state
-        # ==========================================
+        # ====================================================
+        # AFTER TURN STATE
+        # ====================================================
 
-        self.forced_forward_until = 0.0
+        self.forward_after_turn = False
+
+        self.forward_end_time = 0.0
+
+        # ====================================================
+        # PREVENT REPEATED RIGHT TURNS
+        # ====================================================
+
+        self.last_turn = 0.0
+
+        # ====================================================
+        # INFORMATION
+        # ====================================================
 
         self.get_logger().info(
-            "Student Solver Node initialized successfully."
+            "=========================================="
         )
 
         self.get_logger().info(
-            f"Stats -> Speed: {TOP_SPEED}, "
-            f"Accel: {ACCELARATION}, "
-            f"Turn: {TURN_SPEED}, "
-            f"Range: {SENSOR_RANGE}"
+            "Right Wall Hugging Solver Started"
         )
 
+        self.get_logger().info(
+            f"TOP_SPEED = {TOP_SPEED}"
+        )
 
-    # ==========================================
-    # Start a turn
-    # ==========================================
+        self.get_logger().info(
+            f"ACCELARATION = {ACCELARATION}"
+        )
+
+        self.get_logger().info(
+            f"TURN_SPEED = {TURN_SPEED}"
+        )
+
+        self.get_logger().info(
+            f"SENSOR_RANGE = {SENSOR_RANGE}"
+        )
+
+        self.get_logger().info(
+            f"TOTAL = "
+            f"{TOP_SPEED + ACCELARATION + TURN_SPEED + SENSOR_RANGE}"
+        )
+
+        self.get_logger().info(
+            "=========================================="
+        )
+
+    # ========================================================
+    # START TURN
+    # ========================================================
 
     def start_turn(self, direction, duration):
 
@@ -112,153 +159,204 @@ class StudentSolver(Node):
 
         self.turn_end_time = time.time() + duration
 
+        self.last_turn = time.time()
 
-    # ==========================================
-    # Sensor callback
-    # ==========================================
+    # ========================================================
+    # SENSOR CALLBACK
+    # ========================================================
 
     def scan_callback(self, msg):
 
-        # ------------------------------------------
-        # Read sensors
-        # ------------------------------------------
+        # ====================================================
+        # READ LASER SENSORS
+        #
+        # [0] = LEFT
+        # [1] = FRONT
+        # [2] = RIGHT
+        # ====================================================
+
+        if len(msg.ranges) < 3:
+            return
 
         d_left = msg.ranges[0]
         d_front = msg.ranges[1]
         d_right = msg.ranges[2]
 
-        self.get_logger().info(
-            f"L={d_left:.2f} F={d_front:.2f} R={d_right:.2f}"
-)
+        # ====================================================
+        # CLEAN INVALID VALUES
+        # ====================================================
 
-        now = time.time()
+        if d_left <= 0:
+            d_left = SENSOR_RANGE
+
+        if d_front <= 0:
+            d_front = SENSOR_RANGE
+
+        if d_right <= 0:
+            d_right = SENSOR_RANGE
+
+        # Limit sensor readings
+        d_left = min(d_left, SENSOR_RANGE)
+        d_front = min(d_front, SENSOR_RANGE)
+        d_right = min(d_right, SENSOR_RANGE)
+
+        # ====================================================
+        # CREATE COMMAND
+        # ====================================================
 
         cmd = Twist()
 
+        now = time.time()
 
-        # ==========================================
-        # 1. Currently turning
-        # ==========================================
+        # ====================================================
+        # 1. CURRENTLY TURNING
+        # ====================================================
 
         if self.turning:
 
             cmd.linear.x = 0.0
+
             cmd.angular.z = self.turn_direction
 
-            # Turn finished
             if now >= self.turn_end_time:
 
                 self.turning = False
-                self.turn_direction = 0.0
-
-                # Force a short straight movement
-                self.forced_forward_until = (
-                    now + FORCED_FORWARD_TIME
-                )
 
                 cmd.angular.z = 0.0
+
+                # Move straight for a short time after turning
+                self.forward_after_turn = True
+
+                self.forward_end_time = (
+                    now + FORWARD_AFTER_TURN
+                )
 
             self.cmd_pub.publish(cmd)
 
             return
 
+        # ====================================================
+        # 2. MOVE FORWARD AFTER TURN
+        # ====================================================
 
-        # ==========================================
-        # 2. Forced forward after a turn
-        # ==========================================
+        if self.forward_after_turn:
 
-        if now < self.forced_forward_until:
+            if now < self.forward_end_time:
 
-            # Safety: don't drive into a wall
-            if d_front > FRONT_BLOCKED:
+                # Only move if front is clear
+                if d_front > FRONT_BLOCKED:
 
-                cmd.linear.x = FORWARD_SPEED
-                cmd.angular.z = 0.0
+                    cmd.linear.x = FORWARD_SPEED
+                    cmd.angular.z = 0.0
+
+                    self.cmd_pub.publish(cmd)
+
+                    return
+
+                else:
+
+                    # Something is blocking us
+                    self.forward_after_turn = False
 
             else:
 
-                self.forced_forward_until = 0.0
+                self.forward_after_turn = False
 
-            self.cmd_pub.publish(cmd)
+        # ====================================================
+        # 3. FRONT BLOCKED
+        #
+        # Highest priority.
+        # If we cannot go forward, turn LEFT.
+        # ====================================================
 
-            return
+        if d_front < FRONT_BLOCKED:
 
-
-        # ==========================================
-        # 3. RIGHT-HAND WALL FOLLOWING
-        # ==========================================
-
-        # ------------------------------------------
-        # Right open AND front blocked
-        # -> Turn right
-        # ------------------------------------------
-
-        if d_right > WALL_THRESHOLD and d_front <= FRONT_BLOCKED:
-
-            self.start_turn(
-                -TURN_SPEED_CMD,
-                RIGHT_TURN_TIME
-            )
-
-            cmd.linear.x = 0.0
-            cmd.angular.z = -TURN_SPEED_CMD
-
-
-        # ------------------------------------------
-        # Front open
-        # -> Go forward
-        # ------------------------------------------
-
-        elif d_front > FRONT_BLOCKED:
-
-            cmd.linear.x = FORWARD_SPEED
-            cmd.angular.z = 0.0
-
-
-        # ------------------------------------------
-        # Front blocked
-        # Right blocked
-        # Left open
-        # -> Turn left
-        # ------------------------------------------
-
-        elif d_left > WALL_THRESHOLD:
-
+            # If right is also blocked, left turn is useful
             self.start_turn(
                 TURN_SPEED_CMD,
                 LEFT_TURN_TIME
             )
 
             cmd.linear.x = 0.0
-            cmd.angular.z = TURN_SPEED_CMD
+            cmd.angular.z = self.turn_direction
 
+            self.cmd_pub.publish(cmd)
 
-        # ------------------------------------------
-        # Everything blocked
-        # -> U-turn
-        # ------------------------------------------
+            return
 
-        else:
+        # ====================================================
+        # 4. RIGHT OPEN
+        #
+        # Right-hand wall following:
+        # If there is an opening on the right,
+        # take it.
+        #
+        # But don't immediately repeat right turns.
+        # ====================================================
 
-            self.start_turn(
-                -TURN_SPEED_CMD,
-                U_TURN_TIME
-            )
+        if d_right > RIGHT_OPEN:
 
-            cmd.linear.x = 0.0
-            cmd.angular.z = -TURN_SPEED_CMD
+            # Prevent another right turn immediately
+            if now - self.last_turn > 0.8:
 
+                self.start_turn(
+                    -TURN_SPEED_CMD,
+                    RIGHT_TURN_TIME
+                )
 
-        # ==========================================
-        # Publish command
-        # ==========================================
+                cmd.linear.x = 0.0
+                cmd.angular.z = self.turn_direction
+
+                self.cmd_pub.publish(cmd)
+
+                return
+
+        # ====================================================
+        # 5. FOLLOW RIGHT WALL
+        #
+        # Right wall too far -> steer RIGHT
+        # Right wall too close -> steer LEFT
+        # Otherwise -> straight.
+        # ====================================================
+
+        error = d_right - RIGHT_WALL_DISTANCE
+
+        # Steering strength
+        steering = error * 1.2
+
+        # Limit steering
+        if steering > 0.7:
+            steering = 0.7
+
+        if steering < -0.7:
+            steering = -0.7
+
+        # ====================================================
+        # MOVE FORWARD
+        # ====================================================
+
+        cmd.linear.x = FORWARD_SPEED
+
+        # Positive angular velocity = LEFT
+        # Negative angular velocity = RIGHT
+        #
+        # If wall is too far:
+        # error positive -> turn right
+        #
+        # If wall is too close:
+        # error negative -> turn left
+        cmd.angular.z = -steering
+
+        # ====================================================
+        # PUBLISH
+        # ====================================================
 
         self.cmd_pub.publish(cmd)
 
 
-# ==========================================
-# Main
-# ==========================================
+# ============================================================
+# MAIN
+# ============================================================
 
 def main(args=None):
 
@@ -276,14 +374,20 @@ def main(args=None):
 
     finally:
 
+        # Stop the robot
+        stop_cmd = Twist()
+
+        node.cmd_pub.publish(stop_cmd)
+
         node.destroy_node()
 
         rclpy.shutdown()
 
 
-# ==========================================
-# Run
-# ==========================================
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == '__main__':
+
     main()
